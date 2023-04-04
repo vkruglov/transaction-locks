@@ -6,6 +6,8 @@ import org.testcontainers.containers.JdbcDatabaseContainer
 import org.testcontainers.containers.PostgreSQLContainer
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
+import java.sql.Connection
+import java.sql.DriverManager
 import kotlin.concurrent.thread
 
 @Testcontainers
@@ -14,8 +16,8 @@ class PessimisticLocksTest {
 
     @Test
     fun testExclusiveLock() {
-        val transaction1 = buildExecutor("FIRST")
-        val transaction2 = buildExecutor("SECOND")
+        val transaction1 = buildTransactionExecutor("FIRST", "red")
+        val transaction2 = buildTransactionExecutor("SECOND", "green")
 
         val first = thread {
             transaction1.executeExclusiveLockExample(5_000)
@@ -33,8 +35,8 @@ class PessimisticLocksTest {
 
     @Test
     fun testSharedLock() {
-        val transaction1 = buildExecutor("FIRST")
-        val transaction2 = buildExecutor("SECOND")
+        val transaction1 = buildTransactionExecutor("FIRST", "red")
+        val transaction2 = buildTransactionExecutor("SECOND", "green")
 
         val first = thread {
             transaction1.executeSharedLockExample(5_000)
@@ -50,11 +52,43 @@ class PessimisticLocksTest {
         second.join()
     }
 
-    private fun buildExecutor(transactionName: String) = PessimisticLocks(
+    @Test
+    fun testDeadlock() {
+        val transaction1 = buildTransactionExecutor("FIRST", "red")
+        val transaction2 = buildTransactionExecutor("SECOND", "green")
+
+        val first = thread {
+            val connection = connection()
+            val openConnection = transaction1.executeDeadLockExample(1, 5_000, connection = connection)
+            transaction1.executeDeadLockExample(2, shouldCommit = true, connection = openConnection)
+        }
+
+        Thread.sleep(1_000)
+
+        val second = thread {
+            val connection = connection()
+            val openConnection = transaction2.executeDeadLockExample(2, connection = connection)
+            transaction2.executeDeadLockExample(1, shouldCommit = true, connection = openConnection)
+        }
+
+        first.join()
+        second.join()
+    }
+
+    private fun connection(): Connection? {
+        return DriverManager.getConnection(
+            postgresContainer.jdbcUrl,
+            postgresContainer.username,
+            postgresContainer.password
+        )
+    }
+
+    private fun buildTransactionExecutor(transactionName: String, color: String) = PessimisticLocks(
         postgresContainer.jdbcUrl,
         postgresContainer.username,
         postgresContainer.password,
-        transactionName
+        transactionName,
+        color
     )
 
     companion object {
@@ -67,7 +101,7 @@ class PessimisticLocksTest {
 
         @JvmStatic
         @AfterClass
-        fun destroy(): Unit {
+        fun destroy() {
             postgresContainer.close()
         }
     }
